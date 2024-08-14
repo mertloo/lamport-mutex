@@ -1,11 +1,14 @@
 package mutex
 
-import "sync/atomic"
+import (
+	"context"
+	"sync/atomic"
+)
 
 type Node struct {
 	Peers      int64
 	ID         int64
-	InChan     chan Message
+	InChan     chan InMessage
 	OutChan    chan []Message
 	OutAckChan chan struct{}
 
@@ -22,7 +25,7 @@ func NewNode(id, peers int64, clock Clock) *Node {
 	n := &Node{
 		Peers:      peers,
 		ID:         id,
-		InChan:     make(chan Message),
+		InChan:     make(chan InMessage),
 		OutChan:    make(chan []Message),
 		OutAckChan: make(chan struct{}),
 		clock:      clock,
@@ -41,12 +44,27 @@ func (n *Node) Granted() bool {
 	return atomic.LoadUint64(&n.granted) == 1
 }
 
-func (n *Node) Acquire() {
-	n.InChan <- Message{Type: MsgAcquire}
+func (n *Node) Acquire(ctx context.Context) error {
+	return n.WaitProcessed(ctx, Message{Type: MsgAcquire})
 }
 
-func (n *Node) Release() {
-	n.InChan <- Message{Type: MsgRelease}
+func (n *Node) Release(ctx context.Context) error {
+	return n.WaitProcessed(ctx, Message{Type: MsgRelease})
+}
+
+func (n *Node) WaitProcessed(ctx context.Context, msg Message) error {
+	inMsg := InMessage{Message: msg, ErrChan: make(chan error)}
+	select {
+	case n.InChan <- inMsg:
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+	select {
+	case err := <-inMsg.ErrChan:
+		return err
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 }
 
 func (n *Node) Run() {
@@ -65,7 +83,11 @@ func (n *Node) Run() {
 
 		select {
 		case inMsg := <-n.InChan:
-			n.process(inMsg)
+			err := n.process(inMsg.Message)
+			if inMsg.ErrChan != nil {
+				inMsg.ErrChan <- err
+				close(inMsg.ErrChan)
+			}
 		case outCh <- outMsgs:
 			n.outMsgs.Pop()
 			outAckCh = n.OutAckChan
@@ -76,7 +98,7 @@ func (n *Node) Run() {
 
 }
 
-func (n *Node) process(msg Message) {
+func (n *Node) process(msg Message) error {
 	n.clock.Sync(msg.Time)
 
 	switch msg.Type {
@@ -103,6 +125,8 @@ func (n *Node) process(msg Message) {
 		req := msg.Data.(*Request)
 		n.removeRequest(req)
 	}
+
+	return nil
 }
 
 func (n *Node) acquire() (req *Request) {

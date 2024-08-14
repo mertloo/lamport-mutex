@@ -14,11 +14,16 @@ const (
 	MsgRemoveRequest
 )
 
+type InMessage struct {
+	Message
+	ErrChan chan error
+}
+
 type Message struct {
 	Timestamp
 	To   int64
 	Type MessageType
-	Data interface{}
+	Data any
 }
 
 type peerMsgs []Message
