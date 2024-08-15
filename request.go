@@ -12,6 +12,8 @@ func (r *Request) LessThan(other *Request) bool {
 	return r.Timestamp.LessThan(other.Timestamp)
 }
 
+type RequestAcks []*RequestAck
+
 type RequestAck struct {
 	Timestamp
 	Request Request

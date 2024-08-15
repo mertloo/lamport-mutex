@@ -14,9 +14,13 @@ const (
 	MsgRemoveRequest
 )
 
-type InMessage struct {
+type Input struct {
 	Message
 	ErrChan chan error
+}
+
+type Output struct {
+	Messages []Message
 }
 
 type Message struct {
@@ -57,7 +61,7 @@ func (pm peerMsgs) Peek() Message {
 
 type outMsgs []peerMsgs
 
-func newOutMsgs(n int) outMsgs {
+func newOutMsgs(n int64) outMsgs {
 	om := make(outMsgs, n)
 	for i := range om {
 		om[i] = make(peerMsgs, 0)
