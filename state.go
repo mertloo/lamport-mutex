@@ -5,10 +5,8 @@ type State struct {
 	Processed Messages
 	Requests  Messages
 	Acks      Messages
-	OutMsgs   outMsgs
 	Request   *Message
-	Acquired  uint64
-	Granted   uint64
+	OutMsgs   outMsgs
 }
 
 func (s *State) CopyTo(state *State) {
@@ -21,6 +19,16 @@ func (s *State) CopyTo(state *State) {
 	state.Acks = s.Acks
 	state.OutMsgs = s.OutMsgs
 	state.Request = s.Request
-	state.Acquired = s.Acquired
-	state.Granted = s.Granted
+}
+
+func (s *State) Granted() (granted bool) {
+	if len(s.Requests) == 0 || !s.Requests[0].Equal(s.Request) {
+		return false
+	}
+	for i, ack := range s.Acks {
+		if i != int(s.Request.From) && ack == nil {
+			return false
+		}
+	}
+	return true
 }

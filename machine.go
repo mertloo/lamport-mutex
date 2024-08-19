@@ -3,7 +3,6 @@ package mutex
 import (
 	"context"
 	"sync"
-	"sync/atomic"
 )
 
 type Machine struct {
@@ -130,7 +129,7 @@ func (m *Machine) process(msg *Message) (err error) {
 }
 
 func (m *Machine) acquire() (msg *Message, acquired bool) {
-	if atomic.LoadUint64(&m.Acquired) == 1 {
+	if m.Request != nil {
 		return nil, false
 	}
 	msg = &Message{
@@ -140,7 +139,6 @@ func (m *Machine) acquire() (msg *Message, acquired bool) {
 	i := m.Requests.Search(msg)
 	m.Requests.Insert(i, msg)
 	m.Request = msg
-	atomic.StoreUint64(&m.Acquired, 1)
 	return msg, true
 }
 
@@ -171,32 +169,17 @@ func (m *Machine) addAck(msg *Message) {
 	if m.Requests[i].Equal(req) {
 		if m.Acks[msg.From] == nil {
 			m.Acks[msg.From] = msg
-			m.updateGranted()
 		}
 	}
-}
-
-func (m *Machine) updateGranted() {
-	if len(m.Requests) == 0 || !m.Requests[0].Equal(m.Request) {
-		return
-	}
-	for i, ack := range m.Acks {
-		if i != int(m.ID) && ack == nil {
-			return
-		}
-	}
-	atomic.StoreUint64(&m.Granted, 1)
 }
 
 func (m *Machine) release() (msg *Message, ok bool) {
-	if atomic.LoadUint64(&m.Acquired) != 1 {
+	if m.Request == nil {
 		return nil, false
 	}
 	msg = m.Request
 	i := m.Requests.Search(msg)
 	m.Requests.Remove(i)
-	atomic.StoreUint64(&m.Granted, 0)
-	atomic.StoreUint64(&m.Acquired, 0)
 	m.Acks = make(Messages, m.Peers)
 	m.Request = nil
 	return msg, true
@@ -207,7 +190,6 @@ func (m *Machine) removeRequest(msg *Message) (removed bool) {
 	i := m.Requests.Search(msg)
 	if m.Requests[i].Equal(msg) {
 		m.Requests.Remove(i)
-		m.updateGranted()
 		removed = true
 	}
 	return removed
