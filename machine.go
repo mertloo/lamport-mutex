@@ -35,14 +35,22 @@ func NewMachine(id, peers int64, store Store) (m *Machine, err error) {
 	return m, nil
 }
 
-func (m *Machine) Acquire(ctx context.Context) (err error) {
-	msg := &Message{Type: MsgAcquire, Timestamp: Timestamp{From: m.ID}}
-	return m.waitProcessed(ctx, msg)
-}
+func (m *Machine) Process(ctx context.Context, msg *Message) (err error) {
+	in := Input{Message: msg, ErrChan: make(chan error)}
 
-func (m *Machine) Release(ctx context.Context) (err error) {
-	msg := &Message{Type: MsgRelease, Timestamp: Timestamp{From: m.ID}}
-	return m.waitProcessed(ctx, msg)
+	select {
+	case m.InChan <- in:
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+
+	select {
+	case err = <-in.ErrChan:
+	case <-ctx.Done():
+		err = ctx.Err()
+	}
+
+	return err
 }
 
 func (m *Machine) Run() {
@@ -229,24 +237,6 @@ func (m *Machine) addProcessed(msg *Message) {
 	if msg.From != m.ID {
 		m.Processed[msg.From] = msg
 	}
-}
-
-func (m *Machine) waitProcessed(ctx context.Context, msg *Message) (err error) {
-	in := Input{Message: msg, ErrChan: make(chan error)}
-
-	select {
-	case m.InChan <- in:
-	case <-ctx.Done():
-		return ctx.Err()
-	}
-
-	select {
-	case err = <-in.ErrChan:
-	case <-ctx.Done():
-		err = ctx.Err()
-	}
-
-	return err
 }
 
 func (m *Machine) ReadState(state *State) {
