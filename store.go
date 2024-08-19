@@ -21,5 +21,7 @@ func (ms *MemoryStore) Update(src, dst *State) error {
 }
 
 func (ms *MemoryStore) Load() (state *State, err error) {
-	return ms.state.Copy(), nil
+	state = &State{}
+	ms.state.CopyTo(state)
+	return state, nil
 }

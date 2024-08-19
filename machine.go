@@ -2,17 +2,19 @@ package mutex
 
 import (
 	"context"
+	"sync"
 	"sync/atomic"
 )
 
 type Machine struct {
-	Peers      int64
-	ID         int64
-	InChan     chan Input
-	OutChan    chan Output
-	OutAckChan chan struct{}
-	store      Store
-	savedState *State
+	Peers         int64
+	ID            int64
+	InChan        chan Input
+	OutChan       chan Output
+	OutAckChan    chan struct{}
+	store         Store
+	savedStateMtx sync.RWMutex
+	savedState    *State
 	*State
 }
 
@@ -24,20 +26,13 @@ func NewMachine(id, peers int64, store Store) (m *Machine, err error) {
 		OutChan:    make(chan Output),
 		OutAckChan: make(chan struct{}),
 		store:      store,
+		State:      &State{},
 	}
 	m.savedState, err = m.store.Load()
 	if err != nil {
 		return nil, err
 	}
 	return m, nil
-}
-
-func (m *Machine) Acquired() bool {
-	return atomic.LoadUint64(&m.savedState.acquired) == 1
-}
-
-func (m *Machine) Granted() bool {
-	return atomic.LoadUint64(&m.savedState.granted) == 1
 }
 
 func (m *Machine) Acquire(ctx context.Context) (err error) {
@@ -59,8 +54,8 @@ func (m *Machine) Run() {
 
 	for {
 		outCh = nil
-		if outAckCh == nil && m.savedState.outMsgs.Len() > 0 {
-			out.Messages = m.savedState.outMsgs.Peek()
+		if outAckCh == nil && m.savedState.OutMsgs.Len() > 0 {
+			out.Messages = m.savedState.OutMsgs.Peek()
 			outCh = m.OutChan
 		}
 
@@ -72,7 +67,7 @@ func (m *Machine) Run() {
 		case outCh <- out:
 			outAckCh = m.OutAckChan
 		case <-outAckCh:
-			m.savedState.outMsgs.Pop()
+			m.savedState.OutMsgs.Pop()
 			outAckCh = nil
 		}
 	}
@@ -80,16 +75,16 @@ func (m *Machine) Run() {
 }
 
 func (m *Machine) process(msg *Message) (err error) {
-	m.State = m.savedState.Copy()
+	m.ReadState(m.State)
 
 	if m.hasProcessed(msg) {
 		return nil
 	}
 
 	if msg.From == m.ID {
-		msg.Time = m.clock.Assign()
+		msg.Time = m.Clock.Assign()
 	} else {
-		m.clock.Sync(msg.Time)
+		m.Clock.Sync(msg.Time)
 	}
 
 	switch msg.Type {
@@ -116,34 +111,36 @@ func (m *Machine) process(msg *Message) (err error) {
 
 	m.addProcessed(msg)
 
-	err = m.saveState(m.State)
+	err = m.store.Update(m.savedState, m.State)
 	if err != nil {
 		return err
 	}
+
+	m.writeState(m.State)
 
 	return nil
 }
 
 func (m *Machine) acquire() (msg *Message, acquired bool) {
-	if atomic.LoadUint64(&m.acquired) == 1 {
+	if atomic.LoadUint64(&m.Acquired) == 1 {
 		return nil, false
 	}
 	msg = &Message{
-		Timestamp: Timestamp{Time: m.clock.Assign(), From: m.ID},
+		Timestamp: Timestamp{Time: m.Clock.Assign(), From: m.ID},
 		Type:      MsgAddRequest,
 	}
-	i := m.requests.Search(msg)
-	m.requests.Insert(i, msg)
-	m.request = msg
-	atomic.StoreUint64(&m.acquired, 1)
+	i := m.Requests.Search(msg)
+	m.Requests.Insert(i, msg)
+	m.Request = msg
+	atomic.StoreUint64(&m.Acquired, 1)
 	return msg, true
 }
 
 func (m *Machine) addRequest(msg *Message) (added bool) {
 	msg.MustType(MsgAddRequest)
-	i := m.requests.Search(msg)
-	if !m.requests[i].Equal(msg) {
-		m.requests.Insert(i, msg)
+	i := m.Requests.Search(msg)
+	if !m.Requests[i].Equal(msg) {
+		m.Requests.Insert(i, msg)
 		added = true
 	}
 	return added
@@ -152,7 +149,7 @@ func (m *Machine) addRequest(msg *Message) (added bool) {
 func (m *Machine) ack(msg *Message) {
 	msg.MustType(MsgAddRequest)
 	ack := &Message{
-		Timestamp: Timestamp{Time: m.clock.Assign(), From: m.ID},
+		Timestamp: Timestamp{Time: m.Clock.Assign(), From: m.ID},
 		Type:      MsgAckRequest,
 		Data:      msg,
 	}
@@ -162,46 +159,46 @@ func (m *Machine) ack(msg *Message) {
 func (m *Machine) addAck(msg *Message) {
 	msg.MustType(MsgAckRequest)
 	req := msg.Data.(*Message)
-	i := m.requests.Search(req)
-	if m.requests[i].Equal(req) {
-		if m.acks[msg.From] == nil {
-			m.acks[msg.From] = msg
+	i := m.Requests.Search(req)
+	if m.Requests[i].Equal(req) {
+		if m.Acks[msg.From] == nil {
+			m.Acks[msg.From] = msg
 			m.updateGranted()
 		}
 	}
 }
 
 func (m *Machine) updateGranted() {
-	if len(m.requests) == 0 || !m.requests[0].Equal(m.request) {
+	if len(m.Requests) == 0 || !m.Requests[0].Equal(m.Request) {
 		return
 	}
-	for i, ack := range m.acks {
+	for i, ack := range m.Acks {
 		if i != int(m.ID) && ack == nil {
 			return
 		}
 	}
-	atomic.StoreUint64(&m.granted, 1)
+	atomic.StoreUint64(&m.Granted, 1)
 }
 
 func (m *Machine) release() (msg *Message, ok bool) {
-	if atomic.LoadUint64(&m.acquired) != 1 {
+	if atomic.LoadUint64(&m.Acquired) != 1 {
 		return nil, false
 	}
-	msg = m.request
-	i := m.requests.Search(msg)
-	m.requests.Remove(i)
-	atomic.StoreUint64(&m.granted, 0)
-	atomic.StoreUint64(&m.acquired, 0)
-	m.acks = make(Messages, m.Peers)
-	m.request = nil
+	msg = m.Request
+	i := m.Requests.Search(msg)
+	m.Requests.Remove(i)
+	atomic.StoreUint64(&m.Granted, 0)
+	atomic.StoreUint64(&m.Acquired, 0)
+	m.Acks = make(Messages, m.Peers)
+	m.Request = nil
 	return msg, true
 }
 
 func (m *Machine) removeRequest(msg *Message) (removed bool) {
 	msg.MustType(MsgRemoveRequest)
-	i := m.requests.Search(msg)
-	if m.requests[i].Equal(msg) {
-		m.requests.Remove(i)
+	i := m.Requests.Search(msg)
+	if m.Requests[i].Equal(msg) {
+		m.Requests.Remove(i)
 		m.updateGranted()
 		removed = true
 	}
@@ -218,19 +215,19 @@ func (m *Machine) bcast(msg *Message) {
 
 func (m *Machine) send(msg *Message, to int64) {
 	msg.To = to
-	m.outMsgs.Push(msg, to)
+	m.OutMsgs.Push(msg, to)
 }
 
 func (m *Machine) hasProcessed(msg *Message) bool {
 	if msg.From != m.ID {
-		return m.processed[msg.From].Equal(msg)
+		return m.Processed[msg.From].Equal(msg)
 	}
 	return false
 }
 
 func (m *Machine) addProcessed(msg *Message) {
 	if msg.From != m.ID {
-		m.processed[msg.From] = msg
+		m.Processed[msg.From] = msg
 	}
 }
 
@@ -252,11 +249,20 @@ func (m *Machine) waitProcessed(ctx context.Context, msg *Message) (err error) {
 	return err
 }
 
-func (m *Machine) saveState(state *State) (err error) {
-	err = m.store.Update(m.savedState, state)
-	if err != nil {
-		return err
+func (m *Machine) ReadState(state *State) {
+	if state == nil {
+		return
 	}
-	m.savedState = state
-	return nil
+	m.savedStateMtx.RLock()
+	defer m.savedStateMtx.RUnlock()
+	m.savedState.CopyTo(state)
+}
+
+func (m *Machine) writeState(state *State) {
+	if state == nil {
+		return
+	}
+	m.savedStateMtx.Lock()
+	defer m.savedStateMtx.Unlock()
+	state.CopyTo(m.savedState)
 }
