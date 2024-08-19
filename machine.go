@@ -41,12 +41,12 @@ func (m *Machine) Granted() bool {
 }
 
 func (m *Machine) Acquire(ctx context.Context) (err error) {
-	msg := Message{Type: MsgAcquire, Timestamp: Timestamp{From: m.ID}}
+	msg := &Message{Type: MsgAcquire, Timestamp: Timestamp{From: m.ID}}
 	return m.waitProcessed(ctx, msg)
 }
 
 func (m *Machine) Release(ctx context.Context) (err error) {
-	msg := Message{Type: MsgRelease, Timestamp: Timestamp{From: m.ID}}
+	msg := &Message{Type: MsgRelease, Timestamp: Timestamp{From: m.ID}}
 	return m.waitProcessed(ctx, msg)
 }
 
@@ -79,38 +79,39 @@ func (m *Machine) Run() {
 
 }
 
-func (m *Machine) process(msg Message) (err error) {
+func (m *Machine) process(msg *Message) (err error) {
 	m.State = m.savedState.Copy()
 
 	if m.hasProcessed(msg) {
 		return nil
 	}
 
-	m.clock.Sync(msg.Time)
+	if msg.From == m.ID {
+		msg.Time = m.clock.Assign()
+	} else {
+		m.clock.Sync(msg.Time)
+	}
 
 	switch msg.Type {
 	case MsgAcquire:
-		req, ok := m.acquire()
-		if ok {
-			m.bcastAdd(req)
+		addRequest, acquired := m.acquire()
+		if acquired {
+			m.bcast(addRequest)
 		}
 	case MsgAddRequest:
-		req := msg.Data.(*Request)
-		ok := m.addRequest(req)
-		if ok {
-			m.ack(req)
+		added := m.addRequest(msg)
+		if added {
+			m.ack(msg)
 		}
 	case MsgAckRequest:
-		ack := msg.Data.(*RequestAck)
-		m.addAck(ack)
+		m.addAck(msg)
 	case MsgRelease:
-		req, ok := m.release()
+		removeRequest, ok := m.release()
 		if ok {
-			m.bcastRemove(req)
+			m.bcast(removeRequest)
 		}
 	case MsgRemoveRequest:
-		req := msg.Data.(*Request)
-		m.removeRequest(req)
+		m.removeRequest(msg)
 	}
 
 	m.addProcessed(msg)
@@ -123,46 +124,48 @@ func (m *Machine) process(msg Message) (err error) {
 	return nil
 }
 
-func (m *Machine) acquire() (req *Request, ok bool) {
+func (m *Machine) acquire() (msg *Message, acquired bool) {
 	if atomic.LoadUint64(&m.acquired) == 1 {
 		return nil, false
 	}
-	req = &Request{
+	msg = &Message{
 		Timestamp: Timestamp{Time: m.clock.Assign(), From: m.ID},
+		Type:      MsgAddRequest,
 	}
-	i := m.requests.Search(req)
-	m.requests.Insert(i, req)
+	i := m.requests.Search(msg)
+	m.requests.Insert(i, msg)
+	m.request = msg
 	atomic.StoreUint64(&m.acquired, 1)
-	m.request = req
-	return req, true
+	return msg, true
 }
 
-func (m *Machine) addRequest(req *Request) (added bool) {
-	i := m.requests.Search(req)
-	if !m.requests[i].Equal(req) {
-		m.requests.Insert(i, req)
+func (m *Machine) addRequest(msg *Message) (added bool) {
+	msg.MustType(MsgAddRequest)
+	i := m.requests.Search(msg)
+	if !m.requests[i].Equal(msg) {
+		m.requests.Insert(i, msg)
 		added = true
 	}
 	return added
 }
 
-func (m *Machine) ack(req *Request) {
-	ack := &RequestAck{}
-	ack.Timestamp = Timestamp{Time: m.clock.Assign(), From: m.ID}
-	ack.Request = *req
-	msg := Message{
-		Timestamp: ack.Timestamp,
+func (m *Machine) ack(msg *Message) {
+	msg.MustType(MsgAddRequest)
+	ack := &Message{
+		Timestamp: Timestamp{Time: m.clock.Assign(), From: m.ID},
 		Type:      MsgAckRequest,
-		Data:      ack,
+		Data:      msg,
 	}
-	m.send(msg, req.From)
+	m.send(ack, msg.From)
 }
 
-func (m *Machine) addAck(ack *RequestAck) {
-	i := m.requests.Search(&ack.Request)
-	if m.requests[i].Equal(&ack.Request) {
-		if m.acks[ack.From] == nil {
-			m.acks[ack.From] = ack
+func (m *Machine) addAck(msg *Message) {
+	msg.MustType(MsgAckRequest)
+	req := msg.Data.(*Message)
+	i := m.requests.Search(req)
+	if m.requests[i].Equal(req) {
+		if m.acks[msg.From] == nil {
+			m.acks[msg.From] = msg
 			m.updateGranted()
 		}
 	}
@@ -180,47 +183,32 @@ func (m *Machine) updateGranted() {
 	atomic.StoreUint64(&m.granted, 1)
 }
 
-func (m *Machine) release() (req *Request, ok bool) {
-	if atomic.LoadUint64(&m.acquired) == 0 {
+func (m *Machine) release() (msg *Message, ok bool) {
+	if atomic.LoadUint64(&m.acquired) != 1 {
 		return nil, false
 	}
-	req = m.request
-	i := m.requests.Search(req)
+	msg = m.request
+	i := m.requests.Search(msg)
 	m.requests.Remove(i)
 	atomic.StoreUint64(&m.granted, 0)
 	atomic.StoreUint64(&m.acquired, 0)
-	m.acks = make(RequestAcks, m.Peers)
+	m.acks = make(Messages, m.Peers)
 	m.request = nil
-	return req, true
+	return msg, true
 }
 
-func (m *Machine) removeRequest(req *Request) {
-	i := m.requests.Search(req)
-	if m.requests[i].Equal(req) {
+func (m *Machine) removeRequest(msg *Message) (removed bool) {
+	msg.MustType(MsgRemoveRequest)
+	i := m.requests.Search(msg)
+	if m.requests[i].Equal(msg) {
 		m.requests.Remove(i)
 		m.updateGranted()
+		removed = true
 	}
+	return removed
 }
 
-func (m *Machine) bcastAdd(req *Request) {
-	msg := Message{
-		Timestamp: req.Timestamp,
-		Type:      MsgAddRequest,
-		Data:      req,
-	}
-	m.bcast(msg)
-}
-
-func (m *Machine) bcastRemove(req *Request) {
-	msg := Message{
-		Timestamp: Timestamp{Time: m.clock.Assign(), From: m.ID},
-		Type:      MsgRemoveRequest,
-		Data:      req,
-	}
-	m.bcast(msg)
-}
-
-func (m *Machine) bcast(msg Message) {
+func (m *Machine) bcast(msg *Message) {
 	for i := int64(0); i < m.Peers; i++ {
 		if i != m.ID {
 			m.send(msg, i)
@@ -228,25 +216,25 @@ func (m *Machine) bcast(msg Message) {
 	}
 }
 
-func (m *Machine) send(msg Message, to int64) {
+func (m *Machine) send(msg *Message, to int64) {
 	msg.To = to
 	m.outMsgs.Push(msg, to)
 }
 
-func (m *Machine) hasProcessed(msg Message) bool {
+func (m *Machine) hasProcessed(msg *Message) bool {
 	if msg.From != m.ID {
-		return m.processed[msg.From] == msg.Timestamp
+		return m.processed[msg.From].Equal(msg)
 	}
 	return false
 }
 
-func (m *Machine) addProcessed(msg Message) {
+func (m *Machine) addProcessed(msg *Message) {
 	if msg.From != m.ID {
-		m.processed[msg.From] = msg.Timestamp
+		m.processed[msg.From] = msg
 	}
 }
 
-func (m *Machine) waitProcessed(ctx context.Context, msg Message) (err error) {
+func (m *Machine) waitProcessed(ctx context.Context, msg *Message) (err error) {
 	in := Input{Message: msg, ErrChan: make(chan error)}
 
 	select {
