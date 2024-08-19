@@ -14,6 +14,7 @@ type Machine struct {
 	store         Store
 	savedStateMtx sync.RWMutex
 	savedState    *State
+	tmpState      *State
 	*State
 }
 
@@ -25,6 +26,7 @@ func NewMachine(id, peers int64, store Store) (m *Machine, err error) {
 		OutChan:    make(chan Output),
 		OutAckChan: make(chan struct{}),
 		store:      store,
+		tmpState:   &State{},
 		State:      &State{},
 	}
 	m.savedState, err = m.store.Load()
@@ -50,6 +52,15 @@ func (m *Machine) Process(ctx context.Context, msg *Message) (err error) {
 	}
 
 	return err
+}
+
+func (m *Machine) ReadState(state *State) {
+	if state == nil {
+		return
+	}
+	m.savedStateMtx.RLock()
+	defer m.savedStateMtx.RUnlock()
+	m.savedState.CopyTo(state)
 }
 
 func (m *Machine) Run() {
@@ -118,7 +129,8 @@ func (m *Machine) process(msg *Message) (err error) {
 
 	m.addProcessed(msg)
 
-	err = m.store.Update(m.savedState, m.State)
+	m.ReadState(m.tmpState)
+	err = m.store.Update(m.tmpState, m.State)
 	if err != nil {
 		return err
 	}
@@ -219,15 +231,6 @@ func (m *Machine) addProcessed(msg *Message) {
 	if msg.From != m.ID {
 		m.Processed[msg.From] = msg
 	}
-}
-
-func (m *Machine) ReadState(state *State) {
-	if state == nil {
-		return
-	}
-	m.savedStateMtx.RLock()
-	defer m.savedStateMtx.RUnlock()
-	m.savedState.CopyTo(state)
 }
 
 func (m *Machine) writeState(state *State) {
