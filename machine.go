@@ -174,6 +174,8 @@ func (m *Machine) process(msg *Message) (err error) {
 		}
 	case MsgRemoveRequest:
 		m.removeRequest(msg)
+	case MsgTriggerAcquire:
+		m.triggerAcquire(msg)
 	}
 
 	m.addProcessed(msg)
@@ -259,6 +261,13 @@ func (m *Machine) removeRequest(msg *Message) (removed bool) {
 		removed = true
 	}
 	return removed
+}
+
+func (m *Machine) triggerAcquire(msg *Message) {
+	msg.MustType(MsgTriggerAcquire)
+	_msg := msg.Data.(*Message)
+	_msg.MustType(MsgAcquire)
+	m.send(_msg, _msg.To)
 }
 
 func (m *Machine) bcast(msg *Message) {

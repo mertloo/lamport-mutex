@@ -13,6 +13,7 @@ const (
 	MsgAckRequest
 	MsgRelease
 	MsgRemoveRequest
+	MsgTriggerAcquire
 )
 
 type Input struct {
