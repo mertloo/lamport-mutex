@@ -16,7 +16,7 @@ type Machine struct {
 	savedStateMtx sync.RWMutex
 	savedState    *State
 	tmpState      *State
-	*State
+	state         *State
 
 	senderMtx sync.Mutex
 	sender    Sender
@@ -35,7 +35,7 @@ func NewMachine(id, peers int64, store Store) (m *Machine, err error) {
 		OutAckChan: make(chan struct{}),
 		store:      store,
 		tmpState:   &State{},
-		State:      &State{},
+		state:      &State{},
 	}
 	m.savedState, err = m.store.Load()
 	if err != nil {
@@ -141,16 +141,17 @@ func (m *Machine) Run() {
 }
 
 func (m *Machine) process(msg *Message) (err error) {
-	m.ReadState(m.State)
+	m.ReadState(m.state)
+	m.state.CopyTo(m.tmpState)
 
 	if m.hasProcessed(msg) {
 		return nil
 	}
 
 	if msg.From == m.ID {
-		msg.Time = m.Clock.Assign()
+		msg.Time = m.state.Clock.Assign()
 	} else {
-		m.Clock.Sync(msg.Time)
+		m.state.Clock.Sync(msg.Time)
 	}
 
 	switch msg.Type {
@@ -177,36 +178,37 @@ func (m *Machine) process(msg *Message) (err error) {
 
 	m.addProcessed(msg)
 
-	m.ReadState(m.tmpState)
-	err = m.store.Update(m.tmpState, m.State)
+	err = m.store.Update(m.tmpState, m.state)
 	if err != nil {
 		return err
 	}
 
-	m.writeState(m.State)
+	m.writeState(m.state)
 
 	return nil
 }
 
 func (m *Machine) acquire() (msg *Message, acquired bool) {
-	if m.Request != nil {
+	state := m.state
+	if state.Request != nil {
 		return nil, false
 	}
 	msg = &Message{
-		Timestamp: Timestamp{Time: m.Clock.Assign(), From: m.ID},
+		Timestamp: Timestamp{Time: state.Clock.Assign(), From: m.ID},
 		Type:      MsgAddRequest,
 	}
-	i := m.Requests.Search(msg)
-	m.Requests.Insert(i, msg)
-	m.Request = msg
+	i := state.Requests.Search(msg)
+	state.Requests.Insert(i, msg)
+	state.Request = msg
 	return msg, true
 }
 
 func (m *Machine) addRequest(msg *Message) (added bool) {
 	msg.MustType(MsgAddRequest)
-	i := m.Requests.Search(msg)
-	if !m.Requests[i].Equal(msg) {
-		m.Requests.Insert(i, msg)
+	state := m.state
+	i := state.Requests.Search(msg)
+	if !state.Requests[i].Equal(msg) {
+		state.Requests.Insert(i, msg)
 		added = true
 	}
 	return added
@@ -214,8 +216,9 @@ func (m *Machine) addRequest(msg *Message) (added bool) {
 
 func (m *Machine) ack(msg *Message) {
 	msg.MustType(MsgAddRequest)
+	state := m.state
 	ack := &Message{
-		Timestamp: Timestamp{Time: m.Clock.Assign(), From: m.ID},
+		Timestamp: Timestamp{Time: state.Clock.Assign(), From: m.ID},
 		Type:      MsgAckRequest,
 		Data:      msg,
 	}
@@ -225,31 +228,34 @@ func (m *Machine) ack(msg *Message) {
 func (m *Machine) addAck(msg *Message) {
 	msg.MustType(MsgAckRequest)
 	req := msg.Data.(*Message)
-	i := m.Requests.Search(req)
-	if m.Requests[i].Equal(req) {
-		if m.Acks[msg.From] == nil {
-			m.Acks[msg.From] = msg
+	state := m.state
+	i := state.Requests.Search(req)
+	if state.Requests[i].Equal(req) {
+		if state.Acks[msg.From] == nil {
+			state.Acks[msg.From] = msg
 		}
 	}
 }
 
 func (m *Machine) release() (msg *Message, ok bool) {
-	if m.Request == nil {
+	state := m.state
+	if state.Request == nil {
 		return nil, false
 	}
-	msg = m.Request
-	i := m.Requests.Search(msg)
-	m.Requests.Remove(i)
-	m.Acks = make(Messages, m.Peers)
-	m.Request = nil
+	msg = state.Request
+	i := state.Requests.Search(msg)
+	state.Requests.Remove(i)
+	state.Acks = make(Messages, m.Peers)
+	state.Request = nil
 	return msg, true
 }
 
 func (m *Machine) removeRequest(msg *Message) (removed bool) {
 	msg.MustType(MsgRemoveRequest)
-	i := m.Requests.Search(msg)
-	if m.Requests[i].Equal(msg) {
-		m.Requests.Remove(i)
+	state := m.state
+	i := state.Requests.Search(msg)
+	if state.Requests[i].Equal(msg) {
+		state.Requests.Remove(i)
 		removed = true
 	}
 	return removed
@@ -265,19 +271,19 @@ func (m *Machine) bcast(msg *Message) {
 
 func (m *Machine) send(msg *Message, to int64) {
 	msg.To = to
-	m.OutMsgs.Push(msg, to)
+	m.state.OutMsgs.Push(msg, to)
 }
 
 func (m *Machine) hasProcessed(msg *Message) bool {
 	if msg.From != m.ID {
-		return m.Processed[msg.From].Equal(msg)
+		return m.state.Processed[msg.From].Equal(msg)
 	}
 	return false
 }
 
 func (m *Machine) addProcessed(msg *Message) {
 	if msg.From != m.ID {
-		m.Processed[msg.From] = msg
+		m.state.Processed[msg.From] = msg
 	}
 }
 
