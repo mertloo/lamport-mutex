@@ -3,6 +3,7 @@ package mutex
 import (
 	"context"
 	"sync"
+	"time"
 )
 
 type Machine struct {
@@ -16,6 +17,13 @@ type Machine struct {
 	savedState    *State
 	tmpState      *State
 	*State
+
+	senderMtx sync.Mutex
+	sender    Sender
+}
+
+type Sender interface {
+	Send(msg *Message, to int64) error
 }
 
 func NewMachine(id, peers int64, store Store) (m *Machine, err error) {
@@ -36,7 +44,7 @@ func NewMachine(id, peers int64, store Store) (m *Machine, err error) {
 	return m, nil
 }
 
-func (m *Machine) Process(ctx context.Context, msg *Message) (err error) {
+func (m *Machine) Input(ctx context.Context, msg *Message) (err error) {
 	in := Input{Message: msg, ErrChan: make(chan error)}
 
 	select {
@@ -63,7 +71,47 @@ func (m *Machine) ReadState(state *State) {
 	m.savedState.CopyTo(state)
 }
 
+func (m *Machine) SetSender(sender Sender) {
+	m.senderMtx.Lock()
+	defer m.senderMtx.Unlock()
+	m.sender = sender
+}
+
+func (m *Machine) GetSender() (sender Sender) {
+	m.senderMtx.Lock()
+	defer m.senderMtx.Unlock()
+	return m.sender
+}
+
 func (m *Machine) Run() {
+	go func() {
+		var sender Sender
+		for {
+			for {
+				sender = m.GetSender()
+				if sender != nil {
+					break
+				}
+				time.Sleep(time.Second)
+			}
+
+			out := <-m.OutChan
+			msgs := out.Messages
+			for len(msgs) > 0 {
+				next := 0
+				for _, msg := range msgs {
+					err := sender.Send(msg, msg.To)
+					if err != nil {
+						msgs[next] = msg
+						next++
+					}
+				}
+				msgs = msgs[next:]
+			}
+			m.OutAckChan <- struct{}{}
+		}
+	}()
+
 	var (
 		out      Output
 		outCh    chan Output
