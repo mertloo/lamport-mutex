@@ -26,11 +26,21 @@ type Output struct {
 
 type Messages []*Message
 
-func (m Messages) Search(msg *Message) int {
+func (ms *Messages) Search(msg *Message) int {
+	i := ms.search(msg)
+	m := *ms
+	if i >= 0 && i < len(m) && msg.Equal(m[i]) {
+		return i
+	}
+	return -1
+}
+
+func (ms *Messages) search(msg *Message) int {
+	m := *ms
 	left, right := 0, len(m)-1
 	for left <= right {
 		i := (left + right) / 2
-		if m[i].LessThan(msg) {
+		if msg.LessThan(m[i]) {
 			left = i + 1
 		} else {
 			right = i - 1
@@ -39,15 +49,29 @@ func (m Messages) Search(msg *Message) int {
 	return left
 }
 
-func (m Messages) Insert(i int, msg *Message) {
+func (ms *Messages) Insert(msg *Message) (inserted bool) {
+	i := ms.search(msg)
+	m := *ms
+	if i >= 0 && i < len(m) && msg.Equal(m[i]) {
+		return false
+	}
 	m = append(m, &Message{})
 	copy(m[i+1:], m[i:])
 	m[i] = msg
+	*ms = m
+	return true
 }
 
-func (m Messages) Remove(i int) {
-	copy(m[i:], m[i+1:])
-	m = m[:len(m)-1]
+func (ms *Messages) Remove(msg *Message) (removed bool) {
+	i := ms.search(msg)
+	m := *ms
+	if i >= 0 && i < len(m) && msg.Equal(m[i]) {
+		copy(m[i:], m[i+1:])
+		m = m[:len(m)-1]
+		*ms = m
+		return true
+	}
+	return false
 }
 
 type Message struct {

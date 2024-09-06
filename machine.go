@@ -184,20 +184,14 @@ func (m *Machine) acquire() (msg *Message, acquired bool) {
 		Timestamp: Timestamp{Time: state.Clock.Assign(), From: m.ID},
 		Type:      MsgAddRequest,
 	}
-	i := state.Requests.Search(msg)
-	state.Requests.Insert(i, msg)
+	state.Requests.Insert(msg)
 	state.Request = msg
 	return msg, true
 }
 
 func (m *Machine) addRequest(msg *Message) (added bool) {
 	msg.MustType(MsgAddRequest)
-	state := m.state
-	i := state.Requests.Search(msg)
-	if !state.Requests[i].Equal(msg) {
-		state.Requests.Insert(i, msg)
-		added = true
-	}
+	added = m.state.Requests.Insert(msg)
 	return added
 }
 
@@ -217,8 +211,7 @@ func (m *Machine) addAck(msg *Message) {
 	req := msg.Data.(*Message)
 	req.MustType(MsgAddRequest)
 	state := m.state
-	i := state.Requests.Search(req)
-	if state.Requests[i].Equal(req) {
+	if state.Requests.Search(req) != -1 {
 		if state.Acks[msg.From] == nil {
 			state.Acks[msg.From] = msg
 		}
@@ -232,8 +225,7 @@ func (m *Machine) release() (msg *Message, ok bool) {
 	}
 	msg = state.Request
 	msg.MustType(MsgAddRequest)
-	i := state.Requests.Search(msg)
-	state.Requests.Remove(i)
+	state.Requests.Remove(msg)
 	state.Acks = make(Messages, m.Peers)
 	state.Request = nil
 	msg = &Message{
@@ -246,14 +238,9 @@ func (m *Machine) release() (msg *Message, ok bool) {
 
 func (m *Machine) removeRequest(msg *Message) (removed bool) {
 	msg.MustType(MsgRemoveRequest)
-	state := m.state
 	req := msg.Data.(*Message)
 	req.MustType(MsgAddRequest)
-	i := state.Requests.Search(req)
-	if state.Requests[i].Equal(req) {
-		state.Requests.Remove(i)
-		removed = true
-	}
+	removed = m.state.Requests.Remove(msg)
 	return removed
 }
 
