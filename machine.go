@@ -2,8 +2,8 @@ package mutex
 
 import (
 	"context"
+	"fmt"
 	"sync"
-	"time"
 )
 
 type Machine struct {
@@ -18,8 +18,7 @@ type Machine struct {
 	tmpState      *State
 	state         *State
 
-	senderMtx sync.Mutex
-	sender    Sender
+	sender Sender
 }
 
 type Sender interface {
@@ -42,6 +41,14 @@ func NewMachine(id, peers int64, store Store) (m *Machine, err error) {
 		return nil, err
 	}
 	return m, nil
+}
+
+func (m *Machine) Prepare(sender Sender) (err error) {
+	if m.sender != nil {
+		return fmt.Errorf("sender already set")
+	}
+	m.sender = sender
+	return nil
 }
 
 func (m *Machine) Input(ctx context.Context, msg *Message) (err error) {
@@ -71,36 +78,18 @@ func (m *Machine) ReadState(state *State) {
 	m.savedState.CopyTo(state)
 }
 
-func (m *Machine) SetSender(sender Sender) {
-	m.senderMtx.Lock()
-	defer m.senderMtx.Unlock()
-	m.sender = sender
-}
-
-func (m *Machine) GetSender() (sender Sender) {
-	m.senderMtx.Lock()
-	defer m.senderMtx.Unlock()
-	return m.sender
-}
-
 func (m *Machine) Run() {
 	go func() {
-		var sender Sender
+		if m.sender == nil {
+			panic("sender not set")
+		}
 		for {
-			for {
-				sender = m.GetSender()
-				if sender != nil {
-					break
-				}
-				time.Sleep(time.Second)
-			}
-
 			out := <-m.OutChan
 			msgs := out.Messages
 			for len(msgs) > 0 {
 				next := 0
 				for _, msg := range msgs {
-					err := sender.Send(msg, msg.To)
+					err := m.sender.Send(msg, msg.To)
 					if err != nil {
 						msgs[next] = msg
 						next++
