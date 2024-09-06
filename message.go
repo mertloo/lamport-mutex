@@ -2,6 +2,7 @@ package mutex
 
 import (
 	"fmt"
+	"strings"
 )
 
 type MessageType int
@@ -15,6 +16,25 @@ const (
 	MsgTriggerAcquire
 )
 
+func (t MessageType) String() string {
+	switch t {
+	case MsgAcquire:
+		return "Acquire"
+	case MsgAddRequest:
+		return "AddRequest"
+	case MsgAckRequest:
+		return "AckRequest"
+	case MsgRelease:
+		return "Release"
+	case MsgRemoveRequest:
+		return "RemoveRequest"
+	case MsgTriggerAcquire:
+		return "TriggerAcquire"
+	default:
+		return "Unknown"
+	}
+}
+
 type Input struct {
 	Message *Message
 	ErrChan chan error
@@ -26,52 +46,58 @@ type Output struct {
 
 type Messages []*Message
 
-func (ms *Messages) Search(msg *Message) int {
-	i := ms.search(msg)
-	m := *ms
-	if i >= 0 && i < len(m) && msg.Equal(m[i]) {
-		return i
+func (ms *Messages) String() (str string) {
+	parts := make([]string, len(*ms))
+	for i, msg := range *ms {
+		parts[i] = msg.String()
 	}
-	return -1
+	str = strings.Join(parts, "|")
+	return str
 }
 
-func (ms *Messages) search(msg *Message) int {
-	m := *ms
-	left, right := 0, len(m)-1
+type Requests Messages
+
+func (rqs *Requests) Search(msg *Message) (idx int, exists bool) {
+	ms := *rqs
+	left, right := 0, len(ms)-1
 	for left <= right {
 		i := (left + right) / 2
-		if msg.LessThan(m[i]) {
+		if ms[i].LessThan(msg) {
 			left = i + 1
 		} else {
 			right = i - 1
 		}
 	}
-	return left
+	idx = left
+	if idx >= 0 && idx < len(ms) && msg.Equal(ms[idx]) {
+		exists = true
+	}
+	return idx, exists
 }
 
-func (ms *Messages) Insert(msg *Message) (inserted bool) {
-	i := ms.search(msg)
-	m := *ms
-	if i >= 0 && i < len(m) && msg.Equal(m[i]) {
+func (rqs *Requests) Insert(msg *Message) (inserted bool) {
+	i, exists := rqs.Search(msg)
+	if exists {
 		return false
 	}
-	m = append(m, &Message{})
-	copy(m[i+1:], m[i:])
-	m[i] = msg
-	*ms = m
+	ms := *rqs
+	ms = append(ms, &Message{})
+	copy(ms[i+1:], ms[i:])
+	ms[i] = msg
+	*rqs = ms
 	return true
 }
 
-func (ms *Messages) Remove(msg *Message) (removed bool) {
-	i := ms.search(msg)
-	m := *ms
-	if i >= 0 && i < len(m) && msg.Equal(m[i]) {
-		copy(m[i:], m[i+1:])
-		m = m[:len(m)-1]
-		*ms = m
-		return true
+func (rqs *Requests) Remove(msg *Message) (removed bool) {
+	i, exists := rqs.Search(msg)
+	if !exists {
+		return false
 	}
-	return false
+	ms := *rqs
+	copy(ms[i:], ms[i+1:])
+	ms = ms[:len(ms)-1]
+	*rqs = ms
+	return true
 }
 
 type Message struct {
@@ -79,6 +105,15 @@ type Message struct {
 	To   int64
 	Type MessageType
 	Data any
+}
+
+func (m *Message) String() (str string) {
+	str = "nil"
+	if m != nil {
+		str = fmt.Sprintf("time=%d,from=%d,to=%d,type=%s",
+			m.Time, m.From, m.To, m.Type)
+	}
+	return str
 }
 
 func (m *Message) Equal(msg *Message) bool {
@@ -105,14 +140,12 @@ func (t *Timestamp) LessThan(ts Timestamp) bool {
 	return t.Time < ts.Time || (t.Time == ts.Time && t.From < ts.From)
 }
 
-type peerMsgs []*Message
-
-type outMsgs []peerMsgs
+type outMsgs []Messages
 
 func newOutMsgs(peers int64) outMsgs {
 	om := make(outMsgs, peers)
 	for i := range om {
-		om[i] = make(peerMsgs, 0)
+		om[i] = make(Messages, 0)
 	}
 	return om
 }

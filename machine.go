@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"sync"
+	"time"
 )
 
 type Machine struct {
@@ -20,6 +21,8 @@ type Machine struct {
 }
 
 type Sender interface {
+	// Send send msg to machine with id to. It returns nil error if the message is successfully
+	// input to the machine, otherwise it returns an error.
 	Send(msg *Message, to int64) error
 }
 
@@ -88,11 +91,16 @@ func (m *Machine) Run() {
 				for _, msg := range msgs {
 					err := m.sender.Send(msg, msg.To)
 					if err != nil {
+						// TODO add log and log error
 						msgs[next] = msg
 						next++
 					}
 				}
-				msgs = msgs[next:]
+				msgs = msgs[:next]
+				if len(msgs) == 0 {
+					break
+				}
+				time.Sleep(time.Second)
 			}
 			m.OutAckChan <- struct{}{}
 		}
@@ -197,9 +205,8 @@ func (m *Machine) addRequest(msg *Message) (added bool) {
 
 func (m *Machine) ack(msg *Message) {
 	msg.MustType(MsgAddRequest)
-	state := m.state
-	ack := &Message{
-		Timestamp: Timestamp{Time: state.Clock.Assign(), From: m.ID},
+	ack := Message{
+		Timestamp: Timestamp{Time: m.state.Clock.Assign(), From: m.ID},
 		Type:      MsgAckRequest,
 		Data:      msg,
 	}
@@ -211,10 +218,9 @@ func (m *Machine) addAck(msg *Message) {
 	req := msg.Data.(*Message)
 	req.MustType(MsgAddRequest)
 	state := m.state
-	if state.Requests.Search(req) != -1 {
-		if state.Acks[msg.From] == nil {
-			state.Acks[msg.From] = msg
-		}
+	_, exists := state.Requests.Search(req)
+	if exists && state.Acks[msg.From] == nil {
+		state.Acks[msg.From] = msg
 	}
 }
 
@@ -240,36 +246,40 @@ func (m *Machine) removeRequest(msg *Message) (removed bool) {
 	msg.MustType(MsgRemoveRequest)
 	req := msg.Data.(*Message)
 	req.MustType(MsgAddRequest)
-	removed = m.state.Requests.Remove(msg)
+	removed = m.state.Requests.Remove(req)
 	return removed
 }
 
 func (m *Machine) triggerAcquire(msg *Message) {
 	msg.MustType(MsgTriggerAcquire)
 	to := msg.Data.(int64)
-	msg = &Message{
+	_msg := Message{
 		Timestamp: Timestamp{Time: m.state.Clock.Assign(), From: m.ID},
 		Type:      MsgAcquire,
 	}
-	m.send(msg, to)
+	m.send(_msg, to)
 }
 
 func (m *Machine) bcast(msg *Message) {
 	for i := int64(0); i < m.Peers; i++ {
 		if i != m.ID {
-			m.send(msg, i)
+			m.send(*msg, i)
 		}
 	}
 }
 
-func (m *Machine) send(msg *Message, to int64) {
+func (m *Machine) send(msg Message, to int64) {
 	msg.To = to
-	m.state.OutMsgs.Push(msg, to)
+	m.state.OutMsgs.Push(&msg, to)
 }
 
 func (m *Machine) hasProcessed(msg *Message) bool {
 	if msg.From != m.ID {
-		return m.state.Processed[msg.From].Equal(msg)
+		_msg := m.state.Processed[msg.From]
+		if _msg == nil {
+			return false
+		}
+		return _msg.Equal(msg)
 	}
 	return false
 }

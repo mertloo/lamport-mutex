@@ -9,14 +9,15 @@ type MemoryStore struct {
 	state *State
 }
 
-func NewMemoryStore() *MemoryStore {
-	return &MemoryStore{
-		state: &State{},
-	}
+func NewMemoryStore(peers int64) (ms *MemoryStore) {
+	ms = &MemoryStore{}
+	ms.state = NewState(peers)
+	return ms
 }
 
 func (ms *MemoryStore) Update(src, dst *State) error {
-	*src = *dst
+	_ = src
+	ms.state = dst
 	return nil
 }
 
