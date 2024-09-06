@@ -216,6 +216,7 @@ func (m *Machine) ack(msg *Message) {
 func (m *Machine) addAck(msg *Message) {
 	msg.MustType(MsgAckRequest)
 	req := msg.Data.(*Message)
+	req.MustType(MsgAddRequest)
 	state := m.state
 	i := state.Requests.Search(req)
 	if state.Requests[i].Equal(req) {
@@ -231,18 +232,26 @@ func (m *Machine) release() (msg *Message, ok bool) {
 		return nil, false
 	}
 	msg = state.Request
+	msg.MustType(MsgAddRequest)
 	i := state.Requests.Search(msg)
 	state.Requests.Remove(i)
 	state.Acks = make(Messages, m.Peers)
 	state.Request = nil
+	msg = &Message{
+		Timestamp: Timestamp{Time: state.Clock.Assign(), From: m.ID},
+		Type:      MsgRemoveRequest,
+		Data:      msg,
+	}
 	return msg, true
 }
 
 func (m *Machine) removeRequest(msg *Message) (removed bool) {
 	msg.MustType(MsgRemoveRequest)
 	state := m.state
-	i := state.Requests.Search(msg)
-	if state.Requests[i].Equal(msg) {
+	req := msg.Data.(*Message)
+	req.MustType(MsgAddRequest)
+	i := state.Requests.Search(req)
+	if state.Requests[i].Equal(req) {
 		state.Requests.Remove(i)
 		removed = true
 	}
@@ -251,9 +260,12 @@ func (m *Machine) removeRequest(msg *Message) (removed bool) {
 
 func (m *Machine) triggerAcquire(msg *Message) {
 	msg.MustType(MsgTriggerAcquire)
-	_msg := msg.Data.(*Message)
-	_msg.MustType(MsgAcquire)
-	m.send(_msg, _msg.To)
+	to := msg.Data.(int64)
+	msg = &Message{
+		Timestamp: Timestamp{Time: m.state.Clock.Assign(), From: m.ID},
+		Type:      MsgAcquire,
+	}
+	m.send(msg, to)
 }
 
 func (m *Machine) bcast(msg *Message) {
