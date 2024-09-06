@@ -15,7 +15,6 @@ type Machine struct {
 	store         Store
 	savedStateMtx sync.RWMutex
 	savedState    *State
-	tmpState      *State
 	state         *State
 
 	sender Sender
@@ -33,7 +32,6 @@ func NewMachine(id, peers int64, store Store) (m *Machine, err error) {
 		OutChan:    make(chan Output),
 		OutAckChan: make(chan struct{}),
 		store:      store,
-		tmpState:   &State{},
 		state:      &State{},
 	}
 	m.savedState, err = m.store.Load()
@@ -131,7 +129,6 @@ func (m *Machine) Run() {
 
 func (m *Machine) process(msg *Message) (err error) {
 	m.ReadState(m.state)
-	m.state.CopyTo(m.tmpState)
 
 	if m.hasProcessed(msg) {
 		return nil
@@ -169,7 +166,7 @@ func (m *Machine) process(msg *Message) (err error) {
 
 	m.addProcessed(msg)
 
-	err = m.store.Update(m.tmpState, m.state)
+	err = m.store.Update(m.savedState, m.state)
 	if err != nil {
 		return err
 	}
