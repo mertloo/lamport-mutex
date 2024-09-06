@@ -1,7 +1,6 @@
 package mutex
 
 import (
-	"container/heap"
 	"fmt"
 )
 
@@ -84,37 +83,10 @@ func (t *Timestamp) LessThan(ts Timestamp) bool {
 
 type peerMsgs []*Message
 
-func (pm peerMsgs) Len() int {
-	return len(pm)
-}
-
-func (pm peerMsgs) Less(i, j int) bool {
-	return pm[i].Timestamp.LessThan(pm[j].Timestamp)
-}
-
-func (pm peerMsgs) Swap(i, j int) {
-	pm[i], pm[j] = pm[j], pm[i]
-}
-
-func (pm peerMsgs) Pop() any {
-	n := len(pm)
-	msg := pm[n-1]
-	pm = pm[:n-1]
-	return msg
-}
-
-func (pm peerMsgs) Push(x any) {
-	pm = append(pm, x.(*Message))
-}
-
-func (pm peerMsgs) Peek() *Message {
-	return pm[0]
-}
-
 type outMsgs []peerMsgs
 
-func newOutMsgs(n int64) outMsgs {
-	om := make(outMsgs, n)
+func newOutMsgs(peers int64) outMsgs {
+	om := make(outMsgs, peers)
 	for i := range om {
 		om[i] = make(peerMsgs, 0)
 	}
@@ -123,30 +95,30 @@ func newOutMsgs(n int64) outMsgs {
 
 func (om outMsgs) Len() (n int) {
 	for _, pm := range om {
-		n += pm.Len()
+		n += len(pm)
 	}
 	return n
 }
 
 func (om outMsgs) Peek() (msgs []*Message) {
 	for _, pm := range om {
-		if pm.Len() > 0 {
-			msgs = append(msgs, pm.Peek())
+		if len(pm) > 0 {
+			msgs = append(msgs, pm[0])
 		}
 	}
 	return msgs
 }
 
 func (om outMsgs) Pop() (msgs []*Message) {
-	for _, pm := range om {
-		if pm.Len() > 0 {
-			msg := heap.Pop(pm).(*Message)
-			msgs = append(msgs, msg)
+	for i, pm := range om {
+		if len(pm) > 0 {
+			msgs = append(msgs, pm[0])
+			om[i] = pm[1:]
 		}
 	}
 	return msgs
 }
 
 func (om outMsgs) Push(msg *Message, to int64) {
-	heap.Push(om[to], msg)
+	om[to] = append(om[to], msg)
 }

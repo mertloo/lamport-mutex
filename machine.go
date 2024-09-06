@@ -13,11 +13,10 @@ type Machine struct {
 	OutChan       chan Output
 	OutAckChan    chan struct{}
 	store         Store
+	sender        Sender
 	savedStateMtx sync.RWMutex
 	savedState    *State
 	state         *State
-
-	sender Sender
 }
 
 type Sender interface {
